@@ -1,0 +1,189 @@
+---
+title: "Practical Machine Learning: Course Project Assignment"
+author: "(220, 284)"
+date: "December 2014"
+output:
+  html_document:
+    keep_md: yes
+    theme: readable
+    highlight: tango
+---
+#Introduction
+<figure style="float:right">
+  <img src="on-body-sensing-schema.png" alt="Accelorometer placement" width="304" height="228"   />
+  <figcaption>Figure 1: Sensor placements ([Figure taken from](http://groupware.les.inf.puc-rio.br/har))</figcaption>
+</figure>
+This project relates to data collected from six participants who performed five distinct barbell lifts with a dumbbell in each of two different ways designated correct or incorrect.  Sensors (gyroscope and accelerometer) were attached to each participant on the arm, forearm and belt, and also on the dumbbell.  Data from these sensors were recorded during each of the barbell lifts. The measurements recorded were the acceleration and gyroscopic data in each of three perpendicular directions: x, y and z from each of the four sensors associated with a particular participant. Figure 1 shows the placement of these accelorometers (this figure was taken from [here](http://groupware.les.inf.puc-rio.br/har) where more information can also be found).
+
+The aim of this project was to develop a predictive model that could predict from unseen data which one of the five different types of barbell lifts (designated: A, B, C, D or E) was undertaken by the participant irrespective of whether of not it was performed in the correct or incorrect way.  The type of barbell lift is given in the "classe" column of each data set. Data with which to train and cross-validate the model were obtained from [here](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv). Data to predict the classe of twenty barbell lifts for submission to Coursera  were obtained from [here](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv).
+
+The following outlines my approach to the development and cross-validation of a predictive model based on the random-forrest algorithm.  As will be seen, I undertook a visual imspection of the data that allowed a number of columns in the orignal data set to be excluded. Also, I excluded from the data those predictors which were highly correlated with other predictors in the data set.  The model so developed performed extremely well under cross-validation and successfully predicted all the classes of a hitherto unforeseen data for submission to Coursera.
+
+```{r preamble,echo=FALSE}
+library(knitr)
+knit_hooks$set(plot = function(x, options) {
+    paste("<figure><img src=\"", opts_knit$get("base.url"), paste(x, collapse = "."), 
+        "\"><figcaption>", options$fig.cap, "</figcaption></figure>", sep = "")
+})
+```
+##Development of the predictive model
+###Set a random seed
+First, I set a random seed to enable reproducibility of the results.
+```{r set random seed}
+set.seed(34543)
+```
+###Load the required libraries
+Next, I loaded the necessary R libraries, in particular the caret package library.
+```{r libraries,message=FALSE}
+library(caret)
+library(corrplot)
+library(dplyr)
+```
+###Read in the data
+Having loaded the libraries the next step was to read in the training data.  Before this was done however I visually inspected the data in a spreadsheet.  From this inspection it became clear that only a subset of the columns were required as quite a few columns had no data in them.  The columns to be kept were:
+
+`r c(160,8:11,37:49,60:68,84:86,102,113:124,140,151:159)`.
+```{r load data}
+data <- read.csv("../data/pml-training.csv", header = TRUE, na.strings = c("NA", ""))
+## need only a subset of the columns identified from a visual inspection of the data
+requiredCols <-c(160,8:11,37:49,60:68,84:86,102,113:124,140,151:159)
+Train <- subset(data,select=requiredCols)
+```
+###Partition the data into two sets
+I decided to partition the training data into two distinct sets; one set for training the model and one for cross-validating the model.  The training set took the majority of the rows of data, 70%, with the remaining 30% given over to the cross-validation set.
+```{r partition data}
+inTrain   <- createDataPartition(y=Train$classe, p=0.7, list=FALSE)
+training  <- Train[ inTrain,]
+testing   <- Train[-inTrain,]
+## create a data set of training without the 'classe' column.
+segData <- training[,2:ncol(training)]
+```
+###Find the most highly correlated predictors
+I then did an analysis to see if any of the predictors were highly correlated with one or more of the other predictors with a view to removing those that were. The aim of this step was to try and speed-up the model creation by removing superfluous predictors.  The following chart shows a visual depiction of the correlation between predictors.
+```{r correlated,fig.height=12,fig.width=14,echo=FALSE,echo=FALSE,fig.cap="Figure 2: Cross correlation chart"}
+correlations <- cor(segData)
+corrplot(correlations, order = "hclust")
+highCorr <- sort(findCorrelation(correlations, cutoff = .75) + 1)
+```
+From the above chart it can be seen that the following predictors have a high correlation with one or more of the other predictors.
+```{r what are the columlns,echo=FALSE}
+sprintf("%s", toString(names(Train)[highCorr]))
+```
+###Remove the highly correlated predictors from the training data set
+Having determined those predictors having a high correlation with one or more other predictors they were removed from the training data set.
+```{r highly correlated,echo=FALSE}
+message(sprintf("There are %d columns that are highly correlated:\n %s\n so filter them out to give:", length(highCorr), toString(highCorr)))
+training <- tbl_df(training[,-highCorr])
+head(training)
+```
+###Use parallel processing in the model generation
+To further try and speed up the model creation I loaded the $\textbf{doMC}$ library and registered four cores to enable the model creation algorithm to perform some of its tasks in parallel with one another.
+
+```{r load parallel stuff}
+library(doMC)
+registerDoMC(cores = 4)
+```
+###Generate a prediction model based on [Random Forests](http://www.stat.berkeley.edu/~breiman/RandomForests/cc_home.htm)
+We were told during the lecture on Random Forests (Week 3) that this was one of the top performing algorithms, so I chose this model type here.  Also, I specified a 10-fold cross-validation rather than using the default Bootstrapping option, to help speed-up the model generation without loss of accuracy.
+
+```{r model, cache=TRUE}
+start   <- proc.time()
+modFit <- train(classe~ .,data=training, method="rf", trControl = trainControl(method = "cv"))
+elapsed <- (proc.time() - start)
+elapsed
+```
+###Display the time to generate the model
+The elapsed time (equivalent to 'wall clock time') for the model creation was `r round(elapsed[3]/60,1)` minutes on my PC.
+
+###Output details from the model generation
+The output from the  model creation was:
+```{r model output,echo=FALSE}
+modFit
+```
+###Show the confusion matrix related to the training data
+The confusion matrix was created from the training data as follows.
+```{r predict from Training data, message=FALSE}
+lvs <- c("A","B","C","D","E")
+predictTr <- predict(modFit,training)
+tableTr <- table(predictTr, training$classe)
+truthTr <- factor(rep(lvs,sapply(1:5,function(i) sum(tableTr[i,]))),    levels=lvs)
+predTr  <- factor(unlist( lapply(1:5,function(i) rep(lvs,tableTr[i,]))),levels=lvs)
+xtabTr  <- table(predTr, truthTr)
+```
+
+```{r confusion matrix for training,echo=FALSE}
+cmTr            <- confusionMatrix(xtabTr)
+cmTableTr       <- cmTr$table
+cmPositiveTr    <- cmTr$positive
+cmOverallTr     <- cmTr$overall
+cmAccuracyTr    <- cmTr$overall[1]
+cmAccuracyLowerTr <- cmTr$overall[3]
+cmAccuracyUpperTr <- cmTr$overall[4]
+cmByClassTr     <- cmTr$byClass
+```
+
+```{r cmTable Training,echo=FALSE}
+cmTr
+```
+This shows that the model is very good at prediction the classe using the training data with an accuracy of `r cmAccuracyTr` with a 95% confidence level of (`r round(cmAccuracyLowerTr,4)`,`r round(cmAccuracyUpperTr)`). Thus, the in-sample-error is 0%.
+
+###Show the confusion matrix related to the testing data (Cross-Validation)
+The confusion matrix was created from the testing data as follows.
+```{r predict from testing data}
+predictTe <- predict(modFit,testing)
+tableTe <- table(predictTe, testing$classe)
+truthTe <- factor(rep(lvs,sapply(1:5,function(i) sum(tableTe[i,]))),    levels=lvs)
+predTe  <- factor(unlist( lapply(1:5,function(i) rep(lvs,tableTe[i,]))),levels=lvs)
+xtabTe  <- table(predTe, truthTe)
+```
+
+```{r confusion matrix for testing,echo=FALSE}
+cmTe            <- confusionMatrix(xtabTe)
+cmTableTe       <- cmTe$table
+cmPositiveTe    <- cmTe$positive
+cmOverallTe     <- cmTe$overall
+cmAccuracyTe    <- cmTe$overall[1]
+cmAccuracyLowerTe <- cmTe$overall[3]
+cmAccuracyUpperTe <- cmTe$overall[4]
+cmByClassTe     <- cmTe$byClass
+```
+This shows that the model is very good at prediction using the testing data with an accuracy of `r round(cmAccuracyTe,4)` with a 95% confidence level of (`r round(cmAccuracyLowerTe,4)`,`r round(cmAccuracyUpperTe,4)`). The out-of-sample error is therefore `r round((1- cmAccuracyTe)*100,1)`%.
+```{r cmTable Testing,echo=FALSE}
+cmTe
+```
+
+
+###Show the order of the most important predictors
+The following chart shows the predictors ranked by importance.
+```{r dotplot,cache=FALSE,fig.cap="Figure 3: Chart of predictor importance showning that 'magnet_forearm_z' has the most importance.", fig.width=8,fig.height=8,fig.align='center',echo=FALSE}
+varImp <- varImp(modFit, scale = TRUE)
+varRank <- sort(varImp$importance$Overall)
+varNames <- rownames(varImp$importance)
+op <- par(bg="ghostwhite",col.lab="red")
+dotchart(varRank, labels = varNames,bg="hotpink",cex = 1, xlab = "Relative predictor importance (more important predictors have higher numbers)", main = "Relative predictor importance of the model")
+par(op)
+```
+
+###Predictions of twenty dumbar lifts for submission to Coursera
+```{r, Blind data}
+data <- read.csv("../data/pml-testing.csv", header = TRUE, na.strings = c("NA", ""))
+predictions <- predict(modFit, data)
+```
+###Save the predictions in twenty separate files for submission to Coursera
+```{r save predictions}
+## Based on the code suggestion from Coursera
+## https://class.coursera.org/predmachlearn-007/assignment/view?assignment_id=5
+save_predictions = function(predictions,preamble,suffix) {
+  for(index in 1:length(predictions)){
+    file = paste(preamble, index, suffix, sep="")
+    write.table(predictions[index],file=file, col.names=FALSE, row.names=FALSE, quote=FALSE,)
+  }
+}
+preamble <- "prediction_"
+suffix   <- ".txt"
+save_predictions(predictions,preamble,suffix)
+```
+The twenty files were submitted to Coursera and all passed.
+
+###Conclusion
+Using a subset of training data which had had the most highly correlated predictors removed a predictive model  was developed based on the random forest algorithm.  This model was tested against the data it was developed against and cross-validated against a testing data set.  The model performed extremely well with both sets of data with the in-sample-error being 0% and the out-of-sample error being `r round((1- cmAccuracyTe)*100,1)`%.  Finally, the model was used to predict the classe of a data set with twenty samples for submisssion to Coursera; the model correctly predicted the classe of all twenty rows in the data set.
